@@ -32,8 +32,20 @@ import { WebsocketDemo } from "@/components/WebsocketDemo";
 import { WebsocketDemo2 } from "@/components/WebsocketDemo2";
 import { cn } from "@/lib/utils";
 import { WebsocketDemo3 } from "@/components/WebsocketDemo3";
-import { parseAsInteger, parseAsIsoDateTime, useQueryState } from "next-usequerystate";
+import {
+  parseAsInteger,
+  parseAsIsoDateTime,
+  useQueryState,
+} from "next-usequerystate";
 import { ScrollArea } from "@/components/ui/scroll-area";
+
+interface GenerationTask {
+  runId: string;
+  status: string;
+  progress?: number;
+  liveStatus?: string | null;
+  imageUrl?: string;
+}
 
 export default function Page() {
   const [seletedTab, setSelectedTab] = useQueryState("demo", {
@@ -42,7 +54,14 @@ export default function Page() {
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-between mt-2 ">
-      <Tabs value={seletedTab} onValueChange={setSelectedTab} className={cn("w-full flex flex-col items-center", (seletedTab == "ws2" || seletedTab == "ws3") ? " " : "max-w-[600px]")}>
+      <Tabs
+        value={seletedTab}
+        onValueChange={setSelectedTab}
+        className={cn(
+          "w-full flex flex-col items-center",
+          seletedTab == "ws2" || seletedTab == "ws3" ? " " : "max-w-[600px]"
+        )}
+      >
         <TabsList className="grid w-full grid-cols-6 max-w-[600px]">
           <TabsTrigger value="ws">Realtime</TabsTrigger>
           <TabsTrigger value="ws2">Realtime 2</TabsTrigger>
@@ -73,10 +92,22 @@ export default function Page() {
 
       <div className="fixed bottom-4 flex gap-2">
         <Button asChild variant={"outline"}>
-          <a href="https://github.com/BennyKok/comfyui-deploy" target="_blank" className="plausible-event-name=Button+GitHub flex gap-2 items-center">GitHub <VscGithubAlt /></a>
+          <a
+            href="https://github.com/BennyKok/comfyui-deploy"
+            target="_blank"
+            className="plausible-event-name=Button+GitHub flex gap-2 items-center"
+          >
+            GitHub <VscGithubAlt />
+          </a>
         </Button>
         <Button asChild variant={"outline"}>
-          <a href="https://discord.gg/qtHUaVNRVM" target="_blank" className="plausible-event-name=Button+Discord flex gap-2 items-center">Discord <FaDiscord /></a>
+          <a
+            href="https://discord.gg/qtHUaVNRVM"
+            target="_blank"
+            className="plausible-event-name=Button+Discord flex gap-2 items-center"
+          >
+            Discord <FaDiscord />
+          </a>
         </Button>
       </div>
     </main>
@@ -86,7 +117,57 @@ export default function Page() {
 function Txt2img() {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
-  const [runIds, setRunIds] = useState<string[]>([]);
+  const [generationTasks, setGenerationTasks] = useState<GenerationTask[]>([]);
+
+  useEffect(() => {
+    const activeTasks = generationTasks.filter(
+      (task) => task.status !== "success" && task.status !== "failed"
+    );
+
+    if (activeTasks.length === 0) {
+      return;
+    }
+
+    const interval = setInterval(() => {
+      activeTasks.forEach((task) => {
+        checkStatus(task.runId)
+          .then((res) => {
+            if (res) {
+              setGenerationTasks((currentTasks) =>
+                currentTasks.map((t) =>
+                  t.runId === task.runId
+                    ? {
+                        ...t,
+                        status: res.status,
+                        progress: res.progress,
+                        liveStatus: res.live_status ?? null,
+                        imageUrl:
+                          res.status === "success"
+                            ? res.outputs?.[0]?.data?.images?.[0].url ??
+                              undefined
+                            : t.imageUrl,
+                      }
+                    : t
+                )
+              );
+            }
+          })
+          .catch((error) => {
+            console.error(
+              `Error checking status for run ${task.runId}:`,
+              error
+            );
+            setGenerationTasks((currentTasks) =>
+              currentTasks.map((t) =>
+                t.runId === task.runId ? { ...t, status: "failed" } : t
+              )
+            );
+          });
+      });
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [generationTasks]);
 
   return (
     <Card className="w-full max-w-[600px]">
@@ -108,18 +189,27 @@ function Txt2img() {
             if (loading) return;
             setLoading(true);
 
-            const promises = Array(4).fill(null).map(() => {
-              return generate(prompt)
-                .then((res) => {
-                  if (res) {
-                    setRunIds((ids) => [...ids, res.run_id]);
-                  }
-                  return res;
-                })
-                .catch((error) => {
-                  console.error(error);
-                });
-            });
+            const promises = Array(2)
+              .fill(null)
+              .map(() => {
+                return generate(prompt)
+                  .then((res) => {
+                    if (res) {
+                      const newTask: GenerationTask = {
+                        runId: res.run_id,
+                        status: "pending",
+                      };
+                      setGenerationTasks((ids) => [...ids, newTask]);
+                    } else {
+                      console.error("Generate call did not return a run_id");
+                    }
+                    return res;
+                  })
+                  .catch((error) => {
+                    console.error("Error during generate call:", error);
+                    return null;
+                  });
+              });
 
             Promise.all(promises).finally(() => {
               setLoading(false);
@@ -138,8 +228,15 @@ function Txt2img() {
           </Button>
 
           <div className="grid grid-cols-2 gap-4">
-            {runIds.map((runId, index) => (
-              <ImageGenerationResult key={index} runId={runId} />
+            {generationTasks.map((task) => (
+              <ImageGenerationResult
+                key={task.runId}
+                runId={task.runId}
+                status={task.status}
+                progress={task.progress}
+                liveStatus={task.liveStatus}
+                imageUrl={task.imageUrl}
+              />
             ))}
           </div>
         </form>
@@ -235,7 +332,13 @@ function Img2img() {
             Generate {loading && <LoadingIcon />}
           </Button>
 
-          {runId && <ImageGenerationResult key={runId} runId={runId} className="aspect-square" />}
+          {runId && (
+            <ImageGenerationResult
+              key={runId}
+              runId={runId}
+              className="aspect-square"
+            />
+          )}
         </form>
       </CardContent>
     </Card>
@@ -268,7 +371,7 @@ const poses = {
 function OpenposeToImage() {
   const [prompt, setPrompt] = useState("");
   const [poseImageUrl, setPoseImageUrl] = useState(
-    "https://pub-6230db03dc3a4861a9c3e55145ceda44.r2.dev/openpose-pose%20(1).png",
+    "https://pub-6230db03dc3a4861a9c3e55145ceda44.r2.dev/openpose-pose%20(1).png"
   );
   const [poseLoading, setPoseLoading] = useState(false);
   const [image, setImage] = useState("");
@@ -384,7 +487,13 @@ function OpenposeToImage() {
               decorative
             /> */}
             <div className="w-full h-full">
-              {runId && <ImageGenerationResult key={runId} runId={runId} className="aspect-[768/1152]" />}
+              {runId && (
+                <ImageGenerationResult
+                  key={runId}
+                  runId={runId}
+                  className="aspect-[768/1152]"
+                />
+              )}
             </div>
           </div>
         </form>
